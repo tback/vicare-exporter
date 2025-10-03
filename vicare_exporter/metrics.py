@@ -2,7 +2,7 @@ import functools
 import logging
 import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 from prometheus_client import Enum, Gauge
 from PyViCare.PyViCare import PyViCare
@@ -42,7 +42,9 @@ def _extract_component_id(feature_name) -> tuple[Optional[str], Optional[str], s
 
 
 @functools.cache
-def get_metric_for_name(name: str, labels: tuple[str], unit: str = None):
+def get_metric_for_name(
+    name: str, labels: tuple[str], unit: str, type_: str
+) -> Optional[Union[Gauge, Enum]]:
     log.debug("Getting metric for: %s", name)
     documentation, states = _ENUMS.get(name, (None, None))
     if documentation:
@@ -53,16 +55,20 @@ def get_metric_for_name(name: str, labels: tuple[str], unit: str = None):
             labelnames=labels,
         )
 
-    if name.endswith("_status"):
-        return Enum(name, "Status", states=["error", "connected"], labelnames=labels)
-    else:
+    unit = UNITS.get(unit, unit)
+    if name.endswith("_status") and type_ == "string":
+        return Enum(
+            name, "Status", states=["error", "connected", "ok"], labelnames=labels
+        )
+    elif type_ in ("number", "boolean"):
         return Gauge(name, name, labelnames=labels, unit=unit)
+    else:
+        log.warning("Skipping metric: %s", name)
+        return None
 
 
 def extract_feature_metrics(feature: dict, installation_id: str):
-    props = feature.get("properties")
-    if not props:
-        return []
+    properties = feature.get("properties")
 
     labels = dict(
         gateway_id=feature["gatewayId"],
@@ -76,28 +82,32 @@ def extract_feature_metrics(feature: dict, installation_id: str):
         labels[label_name] = component_id
 
     label_names = tuple(sorted(labels))
-    for prop in PROPERTY_NAMES:
-        if prop not in props:
+    for property_name in PROPERTY_NAMES:
+        if property_name not in properties:
             continue
-        unit = props[prop].get("unit", "")
-        unit = UNITS.get(unit, unit)
 
-        value = props[prop]["value"]
+        prop = properties[property_name]
+        value = prop["value"]
         # pick only the current day as metric
-        if prop == "day":
+        if property_name == "day":
             value = value[0]
 
         # map on/off to true/false
-        elif prop == "status" and value in ("on", "off"):
-            prop = "on"
+        elif property_name == "status" and value in ("on", "off"):
+            property_name = "on"
             value = value == "on"
 
-        name = "_".join((metric_name, prop))
-
-        metric = get_metric_for_name(name, label_names, unit)
+        name = "_".join((metric_name, property_name))
+        metric = get_metric_for_name(
+            name, label_names, unit=prop.get("unit"), type_=prop["type"]
+        )
         if isinstance(metric, Gauge):
             metric.labels(**labels).set(value)
-        else:
+        elif isinstance(metric, Enum):
+            if value not in metric._states and value.lower() in metric._states:
+                value = value.lower()
+            if value not in metric._states:
+                log.warning("Unknown state for enum: %s: %s", name, value)
             metric.labels(**labels).state(value)
 
 
