@@ -1,21 +1,24 @@
 import logging
 import os
+import signal
 import sys
+import threading
 
 import dotenv
-from prometheus_client import start_http_server
+from prometheus_client import REGISTRY, start_http_server
 from PyViCare.PyViCare import PyViCare
 
-from vicare_exporter.metrics import ViCareExporter
+from vicare_exporter.metrics import ViCareCollector
 
 log = logging.getLogger("vicare_exporter")
-
 
 if __name__ == "__main__":
     dotenv.load_dotenv()
 
     logging.basicConfig(
-        format="%(asctime)s :: %(name)s :: %(message)s", level="INFO", stream=sys.stdout
+        format="%(asctime)s :: %(levelname)s :: %(name)s :: %(message)s",
+        level="INFO",
+        stream=sys.stdout,
     )
 
     username = os.environ["VICARE_USERNAME"]
@@ -36,11 +39,24 @@ if __name__ == "__main__":
         token_file=".vicare_token",
     )
 
-    exporter = ViCareExporter(vicare, ignore_devices)
+    vicare_collector = ViCareCollector(
+        vicare, ignore_devices, min_fetch_interval_seconds=interval
+    )
     log.info(f"Start serving metrics on port {metrics_port}")
     log.info(f"Polling vicare features for user {username} every {interval} seconds")
     log.info(f"Using client id {client_id[:8]}***")
     if ignore_devices:
         log.info(f"Ignoring device ids: {ignore_devices}")
+
+    REGISTRY.register(vicare_collector)
     start_http_server(port=metrics_port)
-    exporter.poll_forever(sleep=interval)
+
+    stop_event = threading.Event()
+
+    def do_stop(*_):
+        log.info("Received stop signal.")
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, do_stop)
+    signal.signal(signal.SIGTERM, do_stop)
+    stop_event.wait()

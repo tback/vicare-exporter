@@ -1,13 +1,14 @@
-import collections
+import datetime
+import json
 import logging
-from typing import Any, Iterable, Optional, Union
+import time
+from pathlib import Path
+from typing import Any, Iterable, Optional
 
-from prometheus_client.core import Enum, Metric
+from prometheus_client.core import Metric
 from prometheus_client.metrics_core import GaugeMetricFamily
 from prometheus_client.registry import Collector
 from PyViCare.PyViCare import PyViCare
-
-from .enums import _ENUMS
 
 log = logging.getLogger("vicare_exporter")
 
@@ -41,98 +42,95 @@ def _extract_component_id(feature_name) -> tuple[Optional[str], Optional[str], s
 
 
 class ViCareCollector(Collector):
-    def __init__(self, vicare: PyViCare, ignore_devices: list[str]):
+    def __init__(
+        self,
+        vicare: PyViCare,
+        ignore_devices: list[str],
+        min_fetch_interval_seconds: int = 300,
+    ):
         self.vicare = vicare
         self.ignore_devices = ignore_devices or []
+        self._data = None
+        self._last_fetch = 0
+        self.min_fetch_interval_seconds = min_fetch_interval_seconds
 
     def collect(self) -> Iterable[Metric]:
-        pass
+        n_features = 0
+        for installation_id, features in self._fetch_features().items():
+            for feature in features.get("data", []):
+                yield from self._extract_feature_metrics(
+                    feature, installation_id=installation_id
+                )
+                n_features += 1
 
-    def _fetch_devices_features(self) -> dict[str, list[dict[str, Any]]]:
-        all_features = collections.defaultdict(list)
-        for device in self.vicare.devices:
-            if device.device_id in self.ignore_devices:
-                log.debug(f"Skipping device: {device.device_id}")
-                continue
+        return n_features
 
-            all_features[device.service.accessor.id] += (
-                device.service.fetch_all_features()
-            )
-
-        return all_features
-
-    def _get_enum_for_name(self, name: str, labels: tuple[str]):
-        return Enum
-
-    def _get_gauge_for_name(
-        self, name: str, labels: tuple[str], unit: str, type_: str
-    ) -> Optional[Union[GaugeMetricFamily, Enum]]:
-        log.debug("Getting metric for: %s", name)
-        documentation, states = _ENUMS.get(name, (None, None))
-        if documentation:
-            return Enum(
-                name,
-                documentation=documentation,
-                states=states,
-                labelnames=labels,
-            )
-
-        unit = UNITS.get(unit, unit)
-        if name.endswith("_status") and type_ == "string":
-            return Enum(
-                name, "Status", states=["error", "connected", "ok"], labelnames=labels
-            )
-        elif type_ in ("number", "boolean"):
-            return GaugeMetricFamily(name, name, labels=labels, unit=unit)
-        else:
-            log.warning("Skipping metric: %s", name)
-            return None
-
-    def extract_feature_metrics(self, feature: dict, installation_id: str):
+    def _extract_feature_metrics(
+        self, feature: dict, installation_id: str
+    ) -> Iterable[GaugeMetricFamily]:
         properties = feature.get("properties")
 
-        labels = dict(
-            gateway_id=feature["gatewayId"],
-            device_id=feature.get("deviceId", "none"),
-            installation_id=installation_id,
-        )
-
-        # check if this is a heating circuit/burners metric
-        component_id, label_name, metric_name = _extract_component_id(
+        # check if this is a heating circuit/burners or other "enumerated" metric
+        # and extract a label for that
+        component_id, component_label, metric_name = _extract_component_id(
             feature["feature"]
         )
-        if component_id is not None:
-            labels[label_name] = component_id
 
-        label_names = tuple(sorted(labels))
         for property_name in PROPERTY_NAMES:
             if property_name not in properties:
                 continue
 
+            labels = dict(
+                gateway_id=feature["gatewayId"],
+                device_id=feature.get("deviceId", "none"),
+                installation_id=installation_id,
+            )
+            if component_label:
+                labels[component_label] = component_id
+
             prop = properties[property_name]
             value = prop["value"]
+            unit = UNITS.get(prop.get("unit"), prop.get("unit"))
+
             # pick only the current day as metric
             if property_name == "day":
                 value = value[0]
 
-            # map on/off to true/false
-            elif property_name == "status" and value in ("on", "off"):
-                property_name = "on"
-                value = value == "on"
-
             name = "_".join((metric_name, property_name))
 
             if isinstance(value, str):
-                pass
-            else:
-                metric = self._get_gauge_for_name(
-                    name, label_names, unit=prop.get("unit"), type_=prop["type"]
-                )
-            if isinstance(metric, GaugeMetricFamily):
-                metric.add_metric(labels, value)
-            elif isinstance(metric, Enum):
-                if value not in metric._states and value.lower() in metric._states:
-                    value = value.lower()
-                if value not in metric._states:
-                    log.warning("Unknown state for enum: %s: %s", name, value)
-                metric.labels(**labels).state(value)
+                labels["value"] = value
+                value = 1
+
+            metric_family = GaugeMetricFamily(
+                name, name, labels=list(labels), unit=unit
+            )
+            metric_family.add_metric(list(labels.values()), value)
+            yield metric_family
+
+    def _fetch_features(self) -> dict[str, dict[str, Any]]:
+        now = time.time()
+        persistent_cache = Path("vicare_data.json")
+        if self._data is None and persistent_cache.exists():
+            self._data = json.loads(persistent_cache.read_text())
+            self._last_fetch = now
+
+        if (
+            self._data is None
+            or (now - self._last_fetch) > self.min_fetch_interval_seconds
+        ):
+            log.info("Fetching metrics")
+            self._last_fetch = now
+            self._data = {
+                str(device.service.accessor.id): device.service.fetch_all_features()
+                for device in self.vicare.devices
+                if device.device_id not in self.ignore_devices
+            }
+            persistent_cache.write_text(json.dumps(self._data))
+        else:
+            log.debug(
+                "Yielding metrics cached at %s",
+                datetime.datetime.fromtimestamp(self._last_fetch),
+            )
+
+        return self._data
