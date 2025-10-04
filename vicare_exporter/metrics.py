@@ -1,8 +1,6 @@
 import datetime
-import json
 import logging
 import time
-from pathlib import Path
 from typing import Any, Iterable, Optional
 
 from prometheus_client.core import Metric
@@ -110,10 +108,6 @@ class ViCareCollector(Collector):
 
     def _fetch_features(self) -> dict[str, dict[str, Any]]:
         now = time.time()
-        persistent_cache = Path("vicare_data.json")
-        if self._data is None and persistent_cache.exists():
-            self._data = json.loads(persistent_cache.read_text())
-            self._last_fetch = now
 
         if (
             self._data is None
@@ -126,7 +120,6 @@ class ViCareCollector(Collector):
                 for device in self.vicare.devices
                 if device.device_id not in self.ignore_devices
             }
-            persistent_cache.write_text(json.dumps(self._data))
         else:
             log.debug(
                 "Yielding metrics cached at %s",
