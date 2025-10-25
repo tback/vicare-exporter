@@ -8,7 +8,7 @@ from prometheus_client.metrics_core import GaugeMetricFamily
 from prometheus_client.registry import Collector
 from PyViCare.PyViCare import PyViCare
 
-log = logging.getLogger("vicare_exporter")
+LOGGER = logging.getLogger("vicare_exporter")
 
 UNITS = {"kilowattHour": "kWh"}
 PROPERTY_NAMES = [
@@ -53,15 +53,11 @@ class ViCareCollector(Collector):
         self.min_fetch_interval_seconds = min_fetch_interval_seconds
 
     def collect(self) -> Iterable[Metric]:
-        n_features = 0
         for installation_id, features in self._fetch_features().items():
             for feature in features.get("data", []):
                 yield from self._extract_feature_metrics(
                     feature, installation_id=installation_id
                 )
-                n_features += 1
-
-        return n_features
 
     def _extract_feature_metrics(
         self, feature: dict, installation_id: str
@@ -113,7 +109,7 @@ class ViCareCollector(Collector):
             self._data is None
             or (now - self._last_fetch) > self.min_fetch_interval_seconds
         ):
-            log.info("Fetching metrics")
+            LOGGER.info("Fetching metrics")
             self._last_fetch = now
             self._data = {
                 str(device.service.accessor.id): device.service.fetch_all_features()
@@ -121,7 +117,7 @@ class ViCareCollector(Collector):
                 if device.device_id not in self.ignore_devices
             }
         else:
-            log.debug(
+            LOGGER.debug(
                 "Yielding metrics cached at %s",
                 datetime.datetime.fromtimestamp(self._last_fetch),
             )
