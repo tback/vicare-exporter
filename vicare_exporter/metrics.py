@@ -15,6 +15,9 @@ PROPERTY_NAMES = [
     "active",
     "currentDay",
     "day",
+    "week",
+    "month",
+    "year",
     "hours",
     "shift",
     "slope",
@@ -85,21 +88,24 @@ class ViCareCollector(Collector):
             prop = properties[property_name]
             value = prop["value"]
             unit = UNITS.get(prop.get("unit"), prop.get("unit"))
-
-            # pick only the current day as metric
-            if property_name == "day":
-                value = value[0]
-
             name = "_".join((metric_name, property_name))
 
-            if isinstance(value, str):
+            # pick only the latest/current aggregation window as metric
+            if property_name in {"day", "week", "month", "year"} and isinstance(
+                value, list
+            ):
+                value = value[0] if len(value) > 0 else 0
+
+            elif isinstance(value, str):
                 labels["value"] = value
                 value = 1
 
             metric_family = GaugeMetricFamily(
                 name, name, labels=list(labels), unit=unit
             )
-            metric_family.add_metric(list(labels.values()), value)
+            metric_family.add_metric(
+                list(labels.values()), value, timestamp=self._last_fetch
+            )
             yield metric_family
 
     def _fetch_features(self) -> dict[str, dict[str, Any]]:
