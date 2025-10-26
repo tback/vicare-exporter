@@ -103,9 +103,7 @@ class ViCareCollector(Collector):
             metric_family = GaugeMetricFamily(
                 name, name, labels=list(labels), unit=unit
             )
-            metric_family.add_metric(
-                list(labels.values()), value, timestamp=self._last_fetch
-            )
+            metric_family.add_metric(list(labels.values()), value)
             yield metric_family
 
     def _fetch_features(self) -> dict[str, dict[str, Any]]:
