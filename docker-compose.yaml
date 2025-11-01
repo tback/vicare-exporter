@@ -14,7 +14,7 @@ services:
       - 3000:3000
   vicare-exporter:
     restart: always
-    image: ghcr.io/sebbegg/vicare-exporter:latest
+    image: ghcr.io/sebbegg/vicare-exporter:collector
     build:
       context: .
     environment:

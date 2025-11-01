@@ -1,24 +1,23 @@
-import functools
+import datetime
 import logging
-import signal
 import time
-from datetime import datetime
-from threading import Event
-from typing import Optional
+from typing import Any, Iterable, Optional
 
-from prometheus_client import Enum, Gauge
+from prometheus_client.core import Metric
+from prometheus_client.metrics_core import GaugeMetricFamily
+from prometheus_client.registry import Collector
 from PyViCare.PyViCare import PyViCare
-from PyViCare.PyViCareUtils import PyViCareInternalServerError, PyViCareRateLimitError
 
-from .enums import _ENUMS
-
-log = logging.getLogger("vicare_exporter")
+LOGGER = logging.getLogger("vicare_exporter")
 
 UNITS = {"kilowattHour": "kWh"}
 PROPERTY_NAMES = [
     "active",
     "currentDay",
     "day",
+    "week",
+    "month",
+    "year",
     "hours",
     "shift",
     "slope",
@@ -43,115 +42,88 @@ def _extract_component_id(feature_name) -> tuple[Optional[str], Optional[str], s
     return None, None, "_".join(parts)
 
 
-@functools.cache
-def get_metric_for_name(name: str, labels: tuple[str], unit: str = None):
-    log.debug("Getting metric for: %s", name)
-    documentation, states = _ENUMS.get(name, (None, None))
-    if documentation:
-        return Enum(
-            name,
-            documentation=documentation,
-            states=states,
-            labelnames=labels,
-        )
-
-    if name.endswith("_status"):
-        return Enum(name, "Status", states=["error", "connected"], labelnames=labels)
-    else:
-        return Gauge(name, name, labelnames=labels, unit=unit)
-
-
-def extract_feature_metrics(feature: dict, installation_id: str):
-    props = feature.get("properties")
-    if not props:
-        return []
-
-    labels = dict(
-        gateway_id=feature["gatewayId"],
-        device_id=feature.get("deviceId", "none"),
-        installation_id=installation_id,
-    )
-
-    # check if this is a heating circuit/burners metric
-    component_id, label_name, metric_name = _extract_component_id(feature["feature"])
-    if component_id is not None:
-        labels[label_name] = component_id
-
-    label_names = tuple(sorted(labels))
-    for prop in PROPERTY_NAMES:
-        if prop not in props:
-            continue
-        unit = props[prop].get("unit", "")
-        unit = UNITS.get(unit, unit)
-
-        value = props[prop]["value"]
-        # pick only the current day as metric
-        if prop == "day":
-            value = value[0]
-
-        # map on/off to true/false
-        elif prop == "status" and value in ("on", "off"):
-            prop = "on"
-            value = value == "on"
-
-        name = "_".join((metric_name, prop))
-
-        metric = get_metric_for_name(name, label_names, unit)
-        if isinstance(metric, Gauge):
-            metric.labels(**labels).set(value)
-        else:
-            metric.labels(**labels).state(value)
-
-
-class ViCareExporter:
-    def __init__(self, vicare: PyViCare, ignore_devices: list[str]):
+class ViCareCollector(Collector):
+    def __init__(
+        self,
+        vicare: PyViCare,
+        ignore_devices: list[str],
+        min_fetch_interval_seconds: int = 300,
+    ):
         self.vicare = vicare
         self.ignore_devices = ignore_devices or []
+        self._data = None
+        self._last_fetch = 0
+        self.min_fetch_interval_seconds = min_fetch_interval_seconds
 
-    def _fetch_devices_features(self) -> int:
-        n_features = 0
-        for device in self.vicare.devices:
-            if device.device_id in self.ignore_devices:
-                log.debug(f"Skipping device: {device.device_id}")
+    def collect(self) -> Iterable[Metric]:
+        for installation_id, features in self._fetch_features().items():
+            for feature in features.get("data", []):
+                yield from self._extract_feature_metrics(
+                    feature, installation_id=installation_id
+                )
+
+    def _extract_feature_metrics(
+        self, feature: dict, installation_id: str
+    ) -> Iterable[GaugeMetricFamily]:
+        properties = feature.get("properties")
+
+        # check if this is a heating circuit/burners or other "enumerated" metric
+        # and extract a label for that
+        component_id, component_label, metric_name = _extract_component_id(
+            feature["feature"]
+        )
+
+        for property_name in PROPERTY_NAMES:
+            if property_name not in properties:
                 continue
 
-            features = device.service.fetch_all_features()
-            for feature in features.get("data", []):
-                extract_feature_metrics(
-                    feature, installation_id=device.service.accessor.id
-                )
-                n_features += 1
-
-        return n_features
-
-    def poll(self):
-        t = time.time()
-
-        try:
-            n_features = self._fetch_devices_features()
-        except PyViCareInternalServerError:
-            log.error(
-                "An ViCare internal error occurred",
-                exc_info=True,
+            labels = dict(
+                gateway_id=feature["gatewayId"],
+                device_id=feature.get("deviceId", "none"),
+                installation_id=installation_id,
             )
+            if component_label:
+                labels[component_label] = component_id
+
+            prop = properties[property_name]
+            value = prop["value"]
+            unit = UNITS.get(prop.get("unit"), prop.get("unit"))
+            name = "_".join((metric_name, property_name))
+
+            # pick only the latest/current aggregation window as metric
+            if property_name in {"day", "week", "month", "year"} and isinstance(
+                value, list
+            ):
+                value = value[0] if len(value) > 0 else 0
+
+            elif isinstance(value, str):
+                labels["value"] = value
+                value = 1
+
+            metric_family = GaugeMetricFamily(
+                name, name, labels=list(labels), unit=unit
+            )
+            metric_family.add_metric(list(labels.values()), value)
+            yield metric_family
+
+    def _fetch_features(self) -> dict[str, dict[str, Any]]:
+        now = time.time()
+
+        if (
+            self._data is None
+            or (now - self._last_fetch) > self.min_fetch_interval_seconds
+        ):
+            LOGGER.info("Fetching metrics")
+            self._last_fetch = now
+            self._data = {
+                str(device.service.accessor.id): device.service.fetch_all_features()
+                for device in self.vicare.devices
+                if device.device_id not in self.ignore_devices
+            }
         else:
-            log.info(f"Fetched {n_features} features in {time.time() - t:g} seconds")
+            LOGGER.debug(
+                "Yielding metrics cached at %s",
+                datetime.datetime.fromtimestamp(self._last_fetch),
+            )
 
-    def poll_forever(self, sleep=120):
-        stop_event = Event()
-
-        def do_stop(signum, _):
-            log.info("Received signal %s - stopping.", signum)
-            stop_event.set()
-
-        signal.signal(signal.SIGINT, do_stop)
-        signal.signal(signal.SIGTERM, do_stop)
-        while not stop_event.is_set():
-            try:
-                self.poll()
-            except PyViCareRateLimitError as err:
-                log.error(err.message)
-                log.error("Waiting until rate limit reset.")
-                stop_event.wait((err.limitResetDate - datetime.now()).total_seconds())
-
-            stop_event.wait(sleep)
+        return self._data
