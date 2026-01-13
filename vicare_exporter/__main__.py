@@ -13,20 +13,18 @@ from vicare_exporter import LOGGER, ViCareCollector
 if __name__ == "__main__":
     dotenv.load_dotenv()
 
-    logging.basicConfig(
-        format="%(asctime)s :: %(levelname)s :: %(name)s :: %(message)s",
-        level="INFO",
-        stream=sys.stdout,
-    )
-
     username = os.environ["VICARE_USERNAME"]
     client_id = os.environ["VICARE_CLIENT_ID"]
     metrics_port = int(os.getenv("VICARE_METRICS_PORT", "9100"))
     interval = int(os.getenv("VICARE_POLL_INTERVAL", "120"))
     log_level = os.getenv("VICARE_LOGLEVEL", "INFO")
-    ignore_devices = os.getenv("VICARE_IGNORE_DEVICE_IDS", "gateway").split(",")
+    ignore_devices = os.getenv("VICARE_IGNORE_DEVICE_IDS", "gateway,TCU").split(",")
 
-    LOGGER.setLevel(log_level)
+    logging.basicConfig(
+        format="%(asctime)s :: %(levelname)s :: %(name)s :: %(message)s",
+        level=log_level,
+        stream=sys.stderr,
+    )
 
     vicare = PyViCare()
     vicare.setCacheDuration(0)
