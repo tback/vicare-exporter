@@ -12,6 +12,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "black>=25.11.0",
+    "ipython>=8.18.1",
     "pre-commit>=4.2.0",
     "pytest>=8.4.1",
+    "ty>=0.0.11",
 ]
