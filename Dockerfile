@@ -1,13 +1,13 @@
 FROM python:3.13-alpine
 
-ENV PIP_NO_CACHE_DIR=1
-ENV PIP_DISABLE_PIP_VERSION_CHECK=1
-ENV PATH="/root/.local/bin:${PATH}"
+ENV UV_NO_DEV=1
 
-COPY requirements.txt .
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+COPY uv.lock . 
 COPY pyproject.toml .
-RUN pip install -r requirements.txt
+
+RUN uv sync --frozen 
 
 COPY vicare_exporter ./vicare_exporter
 
-CMD [ "python", "-m", "vicare_exporter" ]
+CMD [ "uv", "run", "python", "-m", "vicare_exporter" ]
