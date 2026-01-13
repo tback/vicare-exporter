@@ -2,7 +2,7 @@ import datetime
 import logging
 import time
 from typing import Any, Iterable, Optional
-
+import re
 from prometheus_client.core import Metric
 from prometheus_client.metrics_core import GaugeMetricFamily
 from prometheus_client.registry import Collector
@@ -62,6 +62,12 @@ class ViCareCollector(Collector):
                     feature, installation_id=installation_id
                 )
 
+    def _sanitize_string(self, s: str) -> str:
+        # snake case
+        tmp: str = re.sub(pattern=r"([A-Z])", repl=r"_\1", string=s).lower()
+        # remove invalid characters
+        return re.sub(pattern=r"[^a-zA-Z0-9_]+", repl="_", string=tmp)
+
     def _extract_feature_metrics(
         self, feature: dict, installation_id: str
     ) -> Iterable[GaugeMetricFamily]:
@@ -88,7 +94,8 @@ class ViCareCollector(Collector):
             prop = properties[property_name]
             value = prop["value"]
             unit = UNITS.get(prop.get("unit"), prop.get("unit"))
-            name = "_".join((metric_name, property_name))
+
+            name = self._sanitize_string("_".join((metric_name, property_name)))
 
             # pick only the latest/current aggregation window as metric
             if property_name in {"day", "week", "month", "year"} and isinstance(
