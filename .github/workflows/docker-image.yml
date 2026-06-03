@@ -10,63 +10,35 @@ on:
 
 env:
   IMAGE_NAME: vicare-exporter
+  IMAGE_TAGS: latest v1 ${{ github.sha }}
+  IMAGE_REGISTRY: ghcr.io/${{ github.repository_owner }}
+  REGISTRY_USER: ${{ github.actor }}
+  REGISTRY_PASSWORD: ${{ github.token }}
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
-    permissions:
-      packages: write
-      contents: read
-      checks: write
-      pull-requests: write
-
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v6.0.3
 
-    - name: Install Poetry
-      uses: snok/install-poetry@v1
-
-    - name: Install and Test
-      run: |
-        set -e
-
-        poetry install
-        poetry run pre-commit run --all-files --show-diff-on-failure
-        poetry run pytest
-
-    - name: Publish Test Results
-      uses: EnricoMi/publish-unit-test-result-action@v2
-      if: always()
+    - name: Build container image
+      uses: redhat-actions/buildah-build@v2.13
       with:
-        files: |
-          test-results.xml
+        image: ghcr.io/tback/vicare-exporter
+        tags: latest
 
-    - name: Build the Docker image
-      run: |
-        docker build . \
-        --tag ghcr.io/sebbegg/${IMAGE_NAME}:${{ github.run_id }} \
-        --tag ghcr.io/sebbegg/${IMAGE_NAME}:latest
+    - name: Push container image
+      uses: ./
+      id: push
+      with:
+        image: ${{ steps.build_image.outputs.image }}
+        tags: ${{ steps.build_image.outputs.tags }}
+        registry: ${{ env.IMAGE_REGISTRY }}
+        username: ${{ env.REGISTRY_USER }}
+        password: ${{ env.REGISTRY_PASSWORD }}
+        extra-args: |
+          --disable-content-trust
 
-    - name: Push docker image
-      run: |
-        set -ex
-
-        echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-        echo docker push ghcr.io/sebbegg/${IMAGE_NAME}:${{ github.run_id }}
-        docker push ghcr.io/sebbegg/${IMAGE_NAME}:${{ github.run_id }}
-        
-        ref="${{ github.ref }}"
-
-        if [[ "$ref" == "refs/heads/main" ]]
-        then
-          docker push ghcr.io/sebbegg/${IMAGE_NAME}:latest
-        fi
-
-        if [[ "$ref" =~ refs/tags/v[0-9].* ]]
-        then
-          version="${{ github.ref_name }}"
-          docker tag ghcr.io/sebbegg/${IMAGE_NAME}:${{ github.run_id }} ghcr.io/sebbegg/${IMAGE_NAME}:$version
-          docker push ghcr.io/sebbegg/${IMAGE_NAME}:$version
-        fi
+      - name: Echo outputs
+        run: |
+          echo "${{ toJSON(steps.push.outputs) }}"
