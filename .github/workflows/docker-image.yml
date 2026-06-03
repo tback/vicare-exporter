@@ -39,6 +39,6 @@ jobs:
         extra-args: |
           --disable-content-trust
 
-      - name: Echo outputs
-        run: |
-          echo "${{ toJSON(steps.push.outputs) }}"
+    - name: Echo outputs
+      run: |
+        echo "${{ toJSON(steps.push.outputs) }}"
