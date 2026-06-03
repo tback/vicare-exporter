@@ -24,8 +24,10 @@ jobs:
     - name: Build container image
       uses: redhat-actions/buildah-build@v2.13
       with:
-        image: ghcr.io/tback/vicare-exporter
-        tags: latest
+        containerfiles: |
+          ./Dockerfile
+        image: ${{ env.IMAGE_REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: ${{ env.IMAGE_TAGS }}
 
     - name: Push container image
       uses: ./
