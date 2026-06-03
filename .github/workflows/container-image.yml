@@ -34,8 +34,8 @@ jobs:
       name: Push container image
       uses: redhat-actions/push-to-registry@v2.8
       with:
-        image: ${{ steps.build.outputs.image }}
-        tags: ${{ steps.build.outputs.tags }}
+        image: ${{ env.IMAGE_NAME }}
+        tags: ${{ env.IMAGE_TAGS }}
         registry: ${{ env.IMAGE_REGISTRY }}
         username: ${{ env.REGISTRY_USER }}
         password: ${{ env.REGISTRY_PASSWORD }}
