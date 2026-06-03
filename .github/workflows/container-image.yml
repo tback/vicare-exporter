@@ -30,8 +30,7 @@ jobs:
         tags: ${{ env.IMAGE_TAGS }}
 
     - name: Push container image
-      uses: ./
-      id: push
+      uses: redhat-actions/push-to-registry@v2.8
       with:
         image: ${{ steps.build_image.outputs.image }}
         tags: ${{ steps.build_image.outputs.tags }}
